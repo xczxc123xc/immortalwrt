@@ -1,0 +1,97 @@
+name: Build ImmortalWrt for TP-Link TL-7DR7299 v1
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/build-7dr7299.yml
+
+env:
+  DEVICE: tplink_tl-7dr7299-v1
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          path: openwrt
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex bison g++ gawk \
+            gettext git libncurses-dev libssl-dev python3-distutils python3-setuptools \
+            rsync swig unzip zlib1g-dev file wget curl ccache \
+            libelf-dev libdw-dev dwarves zstd
+
+      - name: Update and install feeds
+        working-directory: openwrt
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Configure target device and LuCI web interface
+        working-directory: openwrt
+        run: |
+          cat > .config <<'EOF'
+          CONFIG_TARGET_mediatek=y
+          CONFIG_TARGET_mediatek_filogic=y
+          CONFIG_TARGET_mediatek_filogic_DEVICE_${{ env.DEVICE }}=y
+          CONFIG_TARGET_ROOTFS_SQUASHFS=y
+          CONFIG_TARGET_IMAGES_GZIP=y
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-ssl=y
+          CONFIG_PACKAGE_luci-app-firewall=y
+          CONFIG_PACKAGE_luci-app-package-manager=y
+          CONFIG_PACKAGE_luci-proto-ipv6=y
+          CONFIG_PACKAGE_luci-proto-ppp=y
+          CONFIG_PACKAGE_luci-theme-bootstrap=y
+          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+          CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y
+          CONFIG_PACKAGE_luci-i18n-package-manager-zh-cn=y
+          CONFIG_PACKAGE_luci-i18n-opkg-zh-cn=y
+          CONFIG_PACKAGE_htop=y
+          CONFIG_PACKAGE_nano=y
+          EOF
+          make defconfig
+
+      - name: Verify device is selected
+        working-directory: openwrt
+        run: |
+          echo "=== Target device in .config ==="
+          grep -E "CONFIG_TARGET_mediatek_filogic_DEVICE_|CONFIG_PACKAGE_luci=y|CONFIG_PACKAGE_luci-ssl" .config || true
+          echo "=== Download toolchain & packages ==="
+          make download -j$(nproc)
+
+      - name: Build firmware
+        working-directory: openwrt
+        run: |
+          make -j$(nproc) V=s 2>&1 | tee build.log
+
+      - name: Collect firmware artifacts
+        working-directory: openwrt
+        run: |
+          mkdir -p ../firmware
+          find bin/targets/mediatek/filogic -maxdepth 1 -type f \( \
+            -name "*${{ env.DEVICE }}*" -o -name "*.itb" -o -name "*.fip" \
+          \) -exec cp -v {} ../firmware/ \;
+          ls -lh ../firmware
+
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: immortalwrt-7dr7299-v1
+          path: firmware/
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-7dr7299
+          path: openwrt/build.log
+          retention-days: 7
+          if-no-files-found: ignore
